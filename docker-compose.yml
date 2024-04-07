@@ -1,0 +1,31 @@
+# this docker-compose file is only for testing
+version: '3.9'
+services:
+  # SQL Server service
+  sql_server_from:
+    # Docker Image for MSSQL
+    image: mcr.microsoft.com/mssql/server
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=1234Belma.
+    ports:
+      - "1433:1433"
+    volumes:
+      - sql_data:/var/opt/mssql1
+  # SQL Server service
+  sql_server_to:
+    # Docker Image for MSSQL
+    image: mcr.microsoft.com/mssql/server
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=1234Belma.
+    ports:
+      - "1432:1433"
+    volumes:
+      - sql_data:/var/opt/mssql2
+
+# Named volumes section
+volumes:
+  # SQL Server data volume
+  sql_data:
+  # Define the volume to persist SQL Server data
