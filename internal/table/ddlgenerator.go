@@ -7,39 +7,48 @@ import (
 )
 
 type DDLGenerator interface {
-	GenerateDDL(*sql.DB, string) (string, error)
+	GenerateDDL(string) (string, error)
 }
 
-type SQLServerDDLGenerator struct{}
+type SQLServerDDLGenerator struct {
+	db *sql.DB
+	c  ColumnDetailService
+}
 
-func (g *SQLServerDDLGenerator) GenerateDDL(db *sql.DB, tableName string) (string, error) {
+func NewSQLServerDDLGenerator(db *sql.DB, c ColumnDetailService) *SQLServerDDLGenerator {
+	return &SQLServerDDLGenerator{db: db, c: c}
+}
+
+func (g *SQLServerDDLGenerator) GenerateDDL(tableName string) (string, error) {
 	var ddl string
 
 	// 1. Basic Table Structure
 	ddl += fmt.Sprintf("CREATE TABLE [%s] (\n", tableName)
 	// 2. Get Column Details
-	columnDetails, err := g.columnDetails(db, tableName)
+	cols, err := g.c.ColumnDetail(tableName)
+	if err != nil {
+		return "", err
+	}
+	columnDetails, err := g.columnDetails(cols)
 	if err != nil {
 		return "", nil
 	}
 	ddl += columnDetails
 	// 3. Primary Key
-	pk, err := g.primaryKey(db, tableName)
-	if err != nil {
-		return "", nil
-	}
+	pk := g.primaryKey(tableName, cols)
 	ddl += pk
 	ddl += "\n);\n\n"
 	// 3. Foreign Keys
-	fks, err := g.foreignKeys(db, tableName)
+	fks, err := g.foreignKeys(tableName)
 	if err != nil {
 		return "", nil
 	}
 	ddl += fks
+	fmt.Println(ddl)
 	return ddl, nil
 }
 
-func (g *SQLServerDDLGenerator) foreignKeys(db *sql.DB, tableName string) (string, error) {
+func (g *SQLServerDDLGenerator) foreignKeys(tableName string) (string, error) {
 	foreignKeys := ""
 	query := `
 	SELECT 
@@ -54,7 +63,7 @@ func (g *SQLServerDDLGenerator) foreignKeys(db *sql.DB, tableName string) (strin
 	WHERE FKCU.TABLE_NAME =  ?
     `
 
-	rows, err := db.Query(query, tableName)
+	rows, err := g.db.Query(query, tableName)
 	if err != nil {
 		return "", err
 	}
@@ -72,60 +81,27 @@ func (g *SQLServerDDLGenerator) foreignKeys(db *sql.DB, tableName string) (strin
 	return foreignKeys, nil
 }
 
-func (g *SQLServerDDLGenerator) primaryKey(db *sql.DB, tableName string) (string, error) {
-	pkStr := ""
-	pkQuery := `
-        SELECT c.COLUMN_NAME
-        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
-        JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c
-        ON tc.CONSTRAINT_NAME = c.CONSTRAINT_NAME 
-        WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' AND c.TABLE_NAME = ?`
-	pkRows, err := db.Query(pkQuery, tableName)
-	if err != nil {
-		return pkStr, err
-	}
-	defer pkRows.Close()
-
+func (g *SQLServerDDLGenerator) primaryKey(tableName string, cols []Column) string {
 	var pkCols []string
-	for pkRows.Next() {
-		var pkCol string
-		if err := pkRows.Scan(&pkCol); err != nil {
-			return "", err
+	for _, col := range cols {
+		if col.IsPrimaryKey {
+			pkCols = append(pkCols, col.ColName)
 		}
-		pkCols = append(pkCols, pkCol)
 	}
 
 	if len(pkCols) > 0 {
-		pkStr = fmt.Sprintf(",\n\tCONSTRAINT PK_%s PRIMARY KEY (%s)", tableName, strings.Join(pkCols, ", "))
+		return fmt.Sprintf(",\n\tCONSTRAINT PK_%s PRIMARY KEY (%s)", tableName, strings.Join(pkCols, ", "))
 	}
 
-	return pkStr, nil
+	return ""
 }
 
-func (g *SQLServerDDLGenerator) columnDetails(db *sql.DB, tableName string) (string, error) {
-	rows, err := db.Query(`
-        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, CHARACTER_MAXIMUM_LENGTH, 
-               NUMERIC_PRECISION, NUMERIC_SCALE, COLUMN_DEFAULT
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = ?`, tableName)
-
-	if err != nil {
-		return "", err
+func (g *SQLServerDDLGenerator) columnDetails(columns []Column) (string, error) {
+	var columnsStr []string
+	for _, col := range columns {
+		columnsStr = append(columnsStr, fmt.Sprintf("\t%s %s %s", col.ColName, col.DataType, g.columnTypeOptions(col)))
 	}
-	defer rows.Close()
-	var columns []string
-	for rows.Next() {
-		var colName, dataType, isNullable string
-		var columnDefault *string
-
-		var maxLength, precision, scale *int // Can be null for certain data types
-		if err := rows.Scan(&colName, &dataType, &isNullable, &maxLength, &precision, &scale, &columnDefault); err != nil {
-			return "", err
-		}
-		columns = append(columns, fmt.Sprintf("\t%s %s %s", colName, dataType, g.columnTypeOptions(dataType, maxLength, precision, scale, isNullable, columnDefault)))
-	}
-
-	return strings.Join(columns, ",\n"), nil
+	return strings.Join(columnsStr, ",\n"), nil
 }
 
 func (g *SQLServerDDLGenerator) formatDefaultValue(defaultValue string) string {
@@ -137,25 +113,27 @@ func (g *SQLServerDDLGenerator) formatDefaultValue(defaultValue string) string {
 	}
 }
 
-func (g *SQLServerDDLGenerator) columnTypeOptions(dataType string, maxLength, precision, scale *int, isNullable string, defaultValue *string) string {
+func (g *SQLServerDDLGenerator) columnTypeOptions(col Column) string {
 	options := ""
-	if strings.EqualFold(dataType, "BIGINT") || strings.EqualFold(dataType, "SMALLINT") || strings.EqualFold(dataType, "INT") {
+	if col.isIdentity {
+		options = "IDENTITY(1,1)" // Include IDENTITY
+	} else if strings.EqualFold(col.DataType, "BIGINT") || strings.EqualFold(col.DataType, "SMALLINT") || strings.EqualFold(col.DataType, "INT") {
 		options = "" // No precision or scale needed
-	} else if precision != nil && scale != nil {
-		options = fmt.Sprintf("(%d, %d)", *precision, *scale)
-	} else if maxLength != nil {
-		options = fmt.Sprintf("(%d)", *maxLength)
+	} else if col.precision != nil && col.scale != nil {
+		options = fmt.Sprintf("(%d, %d)", *col.precision, *col.scale)
+	} else if col.maxLength != nil {
+		options = fmt.Sprintf("(%d)", *col.maxLength)
 	}
 
 	// Include nullability
-	if isNullable == "YES" {
+	if col.isNullable == "YES" {
 		options += " NULL"
 	} else {
 		options += " NOT NULL"
 	}
 
-	if defaultValue != nil && *defaultValue != "" {
-		options += " " + g.formatDefaultValue(*defaultValue)
+	if col.columnDefault != nil && *col.columnDefault != "" {
+		options += " " + g.formatDefaultValue(*col.columnDefault)
 	}
 
 	return options

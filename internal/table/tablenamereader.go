@@ -5,14 +5,20 @@ import (
 )
 
 type TableNameReader interface {
-	GetTableNames(db *sql.DB) ([]string, error)
+	GetTableNames() ([]string, error)
 }
 
-type SQLServerTableNameReader struct{}
+type SQLServerTableNameReader struct {
+	db *sql.DB
+}
 
-func (s *SQLServerTableNameReader) GetTableNames(db *sql.DB) (tableNames []string, err error) {
+func NewSQLServerTableNameReader(db *sql.DB) *SQLServerTableNameReader {
+	return &SQLServerTableNameReader{db: db}
+}
+
+func (s *SQLServerTableNameReader) GetTableNames() (tableNames []string, err error) {
 	// SQL Server query to get table names
-	rows, err := db.Query(`
+	rows, err := s.db.Query(`
 		SELECT TABLE_NAME
 		FROM INFORMATION_SCHEMA.TABLES
 		WHERE TABLE_TYPE = 'BASE TABLE' -- Exclude views
