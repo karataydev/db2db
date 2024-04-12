@@ -10,11 +10,11 @@ compile:
 	GOOS=linux GOARCH=386 go build -o bin/db2db-linux-386 main.go
 	GOOS=windows GOARCH=386 go build -o bin/db2db-windows-386 main.go
 
-build: windows linux darwin
+build-all: windows linux darwin
 	@echo version: $(VERSION)
 
 EXECUTABLE=db2db
-VERSION=$(shell git describe --tags --always --long --dirty)
+VERSION=$(shell git describe --tags)
 WINDOWS=$(EXECUTABLE)_windows_amd64_$(VERSION).exe
 LINUX=$(EXECUTABLE)_linux_amd64_$(VERSION)
 DARWIN=$(EXECUTABLE)_darwin_amd64_$(VERSION)
